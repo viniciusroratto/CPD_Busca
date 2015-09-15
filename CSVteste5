@@ -1,0 +1,308 @@
+import csv              #Para ler arquivo de artigos, aonde se extráira os dados        {.reader()}
+import re               #Para manipular strings obtidas no arquivo                      {.sub(), .split()}
+import hashlib          #Para usar função hash                                          {.md5(), .hexdigest()}
+import pickle           #Para utilizar protocolos binários para serializar objetos      {.dump(), .load()}
+
+
+##################################################################################################################################################################################################
+#Definição das classes
+
+############################
+"""
+Classe para armazenar os registros do arquivo
+"""
+############################
+
+class Register(object):
+    def __init__(self, offset = 0, info = []):
+        self.offset          = offset
+        if info[0] != "-":
+            self.year        = int(info[0], 10)
+        else:
+            self.year        = info[0]
+        self.type            = info[1]
+        self.nature          = info[2]
+        self.title           = info[3]
+        self.event           = info[4]
+        self.annals          = info[5]
+        if info[6] != "-":
+            self.edition     = int(info[6], 10)
+        else:
+            self.edition     = info[6]
+        self.isbn            = info[7]
+        self.country         = info[8]
+        self.city            = info[9]
+        self.volume          = info[10]
+        self.installment     = info[11]
+        self.serial          = info[12]
+        if info[13] != "-":
+            self.p_ini       = int(info[13], 10)
+        else:
+            self.p_ini       = info[13]
+        if info[14] != "-":
+            self.p_final     = int(info[14], 10)
+        else:
+            self.p_final     = info[14]
+        self.language        = info[15]
+        self.url             = info[16]
+        self.note            = info[17]
+        self.area            = info[18]
+        self.thread          = info[19]
+        self.project         = info[20]
+        self.authors         = info[21::2]
+        self.type2           = info[22::2]
+########
+    def __repr__(self):
+
+        return "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" % (str(self.year), str(self.type), str(self.nature), str(self.title), str(self.event), str(self.annals), str(self.edition), str(self.isbn), str(self.country), str(self.city), str(self.volume), str(self.installment), str(self.serial), str(self.p_ini), str(self.p_final), str(self.language), str(self.url), str(self.note), str(self.area), str(self.thread), str(self.project), str(self.authors), str(self.type2))
+
+############################
+"""
+Árvore Trie (transformável em patricia)
+"""
+############################
+
+class NodeTrie(object):
+    def __init__(self, value, children_right = None, children_left = None, offsets = [], rest_word = []):
+        self.value           = value            # parte do código que o nodo representa
+        self.children_right  = children_right   # filho direito do nodo
+        self.children_left   = children_left    # filho esquerdo do nodo
+        self.offsets         = offsets          # offset em outro arquivo
+        self.rest_word       = rest_word        # resto da palavra/código (se houver) na folha
+########
+    def search(self, code_bin):                 # procura um código binário na árvore - Trie
+
+        if code_bin[0] == '0':
+            if self.children_left != None:
+                if len(code_bin[1:]) > 0:
+                    return self.children_left.search(code_bin[1:])
+                else:
+                    return [True, self.children_left]
+            else:
+                return [False, None]
+        elif code_bin[0] == '1':
+            if self.children_right != None:
+                if len(code_bin[1:]) > 0:
+                    return self.children_right.search(code_bin[1:])
+                else:
+                    return [True, self.children_right]
+            else:
+                return [False, None]
+        return [None, "Código inválido"]            #se não for '0' ou '1', o código está errado
+########
+    def AddCodeBin(self, code, word, offset):           #o código já foi procurado previamente, então ele não existe na árvore (todos códigos tem o mesmo tamanho, já que vem da mesma função hash)
+        if code[0] == '0':
+            if self.children_left != None:
+                if len(code[1:]) > 0:
+                    return self.children_left.AddCodeBin(code[1:], word, offset)
+            elif len(code[1:]) > 0:
+                self.children_left = NodeTrie(code[0], offsets = [])
+                self.children_left.AddCodeBin(code[1:], word, offset)
+            else:
+                self.children_left = NodeTrie(code[0], offsets = [])
+                self.children_left.offsets.append(offset)
+                self.children_left.rest_word = word
+        elif code[0] == '1':
+            if self.children_right != None:
+                if len(code[1:]) > 0:
+                    return self.children_right.AddCodeBin(code[1:], word, offset)
+            elif len(code[1:]) > 0:
+                self.children_right = NodeTrie(code[0], offsets = [])
+                self.children_right.AddCodeBin(code[1:], word, offset)
+            else:
+                self.children_right = NodeTrie(code[0], offsets = [])
+                self.children_right.offsets.append(offset)
+                self.children_right.rest_word = word
+                
+########
+    def AddNodeWord(self, word, offset):
+
+        hash_w = hashlib.md5(word.encode())                 #coloca string na função hash, (Unicode-objects must be encoded before hashing)
+        hash_w_bin = bin(int(hash_w.hexdigest(), 16))       #Devolve o código em hexadecimal, transforma em inteiro e então em bits (string)
+        hash_w_bin = hash_w_bin[2:]
+
+        node = self.search(hash_w_bin)                      #Procura código na árvore
+        if node[0]:
+            if offset not in node[1].offsets:                  #Se já existe e offset não está na lista de offsets, 
+                node[1].offsets.append(offset)                      #coloca novo offset na lista de offsets
+        else:
+            self.AddCodeBin(hash_w_bin, word, offset)
+
+
+        
+##################################################################################################################################################################################################
+#Definição das funções
+def normalize(title):
+    aux_title = title.lower()           #normaliza o título, todas letras em minusculo
+
+    word_list = re.sub("[\W]", " ", aux_title).split()
+
+    return word_list
+
+def intercession(listas):
+    result = []
+    a = listas[0]
+    if len(listas[1:]) > 0:
+        b = listas[1]
+        for obj in a:
+            if obj in b:
+                result.append(obj)
+        if len(listas[2:]) > 0:
+            c = listas[2:]
+            c.append(result)
+            return intercession(c)
+        else:
+            return result
+    else:
+        return result
+
+
+def make_index_files(lista_registros, handler): #monta arquivos invertidos, que armazenam os indices em árvores Trie. 
+    trie_words = NodeTrie(None, offsets = [])
+    trie_authors = NodeTrie(None, offsets = [])
+    trie_area = NodeTrie(None, offsets = [])
+    trie_year = NodeTrie(None, offsets = [])
+
+    f_words = open(handler + "data_word_index.bin", 'wb')
+    f_authors = open(handler + "data_authors_index.bin", 'wb')
+    f_area = open(handler + "data_area_index.bin", 'wb')
+    f_year = open(handler + "data_year_index.bin", 'wb')
+
+
+    for registro in lista_registros: #para cada registro, insere suas palavras na Trie
+        
+
+        article_title = registro.title #pega o título do artigo
+        article_t = normalize(article_title)
+        for word in article_t: #para cada palavra, insere-a na Trie ou (se já existe) dá um novo offset
+            trie_words.AddNodeWord(word, registro.offset)
+        
+        article_autores = registro.authors
+        article_autores = [x.lower() for x in article_autores]
+        for author in article_autores:
+            trie_authors.AddNodeWord(author, registro.offset)
+        
+        trie_area.AddNodeWord(registro.area.lower(), registro.offset)
+
+        trie_year.AddNodeWord(str(registro.year), registro.offset)
+    
+    pickle.dump(trie_words, f_words, pickle.HIGHEST_PROTOCOL)
+    pickle.dump(trie_authors, f_authors, pickle.HIGHEST_PROTOCOL)
+    pickle.dump(trie_area, f_area, pickle.HIGHEST_PROTOCOL)
+    pickle.dump(trie_year, f_year, pickle.HIGHEST_PROTOCOL)
+
+    f_words.close()
+    f_area.close()
+    f_authors.close()
+    f_year.close()
+
+
+
+def search_article(offset, name_file):
+
+    handler = open(name_file + 'Data.bin', 'rb')
+    #########
+    # handler.seek(offset) está errado com o atual método de obter offset
+    ########
+    for i in range(offset):
+        pickle.load(handler)
+
+    r = pickle.load(handler)
+
+    handler.close()
+
+    return r
+
+def list_article(word, tree, name_file):
+    n = []
+    articles = []
+
+    #a função search precisa do código obtido com a função hash
+    hash_w = hashlib.md5(word.encode())                 #coloca string na função hash, (Unicode-objects must be encoded before hashing)
+    hash_w_bin = bin(int(hash_w.hexdigest(), 16))       #Devolve o código em hexadecimal, transforma em inteiro e então em bits (string)
+    hash_w_bin = hash_w_bin[2:]
+
+    n = tree.search(hash_w_bin)
+
+    if n[0]:
+        for i in n[1].offsets:
+            articles.append(search_article(i, name_file))
+        return articles
+    else:
+        return None
+
+def search_area(area, tree, name_file):
+    
+    articles = []
+    authors = {}
+        
+    area = area.lower()
+
+    articles = list_article(area, tree, name_file)    
+
+    if articles != None:
+        for art in articles:
+            if art != None:
+                for author in art.authors:
+                    authors[author] = 0
+                    
+        for art in articles:
+            if art != None:
+                for author in art.authors:
+                    authors[author] += 1
+
+        return authors          #retorna dicionário com todos autores da área, o número de artigos que cada autor publicou e seus respectivos artigos
+    else:
+        return None
+    
+def search_authors(names, tree, name_file):
+
+    articles = []
+    a, b, result, result1 = [], [], [], []
+
+    for author in names:
+        articles.append(list_article(author, tree, name_file))
+
+    for i in articles:
+        for j in i:
+            a.append(j.title)
+        b.append(a)
+        a = []
+
+    if len(articles[1:]) > 0:
+        c = intercession(b)
+        for aut in articles:
+            for title in c:
+                for art in aut:
+                    if title == art.title:
+                        if title not in result1:
+                            result.append(art)
+                            result1.append(title)
+        return result
+    else:
+        return articles[0]
+
+def insertion_sort(lista_registro):
+    for i in range(len(lista_registro)):
+        iterator = lista_registro[i]
+        j = i
+        while j > 0 and iterator.title < lista_registro[j-1].title :
+            lista_registro[j] = lista_registro[j-1]
+            j -= 1
+        lista_registro[j] = iterator
+
+def print_list(lista_registros):
+    if(lista_registros == None):
+        print("\nRegistro não encontrado.\n")
+    else:
+        if(len(lista_registros) > 15):
+            sorted(lista_registros, key = lambda Register: Register.title.lower())
+        else:
+            insertion_sort(lista_registros)
+
+        for registro in lista_registros:
+        
+            print("%s\n" % (registro.title))
+
+
+##################################################################################################################################################################################################
